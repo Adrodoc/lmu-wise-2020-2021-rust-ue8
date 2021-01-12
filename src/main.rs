@@ -1,22 +1,34 @@
+use futures::{
+    future::{select, Either, FutureExt},
+    pin_mut,
+};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::{pin::Pin, task::{Context, Poll}};
-use futures::{pin_mut, future::{Either, FutureExt, select}};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::process::Stdio;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio::process::{Child, Command};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net, runtime::Runtime};
-use serde::{Serialize, Deserialize};
-
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net,
+    runtime::Runtime,
+};
 
 struct WaitUntil<F: Future> {
-    pred: fn (F::Output) -> bool,
-    fut: Vec<Pin<Box<F>>>
+    pred: fn(F::Output) -> bool,
+    fut: Vec<Pin<Box<F>>>,
 }
 
 impl<F: Future> WaitUntil<F> {
     #[allow(dead_code)]
-    fn new(pred: fn (F::Output) -> bool) -> WaitUntil<F> {
-        WaitUntil { pred, fut: Vec::new() }
+    fn new(pred: fn(F::Output) -> bool) -> WaitUntil<F> {
+        WaitUntil {
+            pred,
+            fut: Vec::new(),
+        }
     }
 
     #[allow(dead_code)]
@@ -32,12 +44,14 @@ impl<F: Future> Future for WaitUntil<F> {
         let mut found = false;
         let mut idx = 0;
         let mut evaluated = Vec::new();
-        let pred = self.pred;   // cannot access self.pred in the iterator
+        let pred = self.pred; // cannot access self.pred in the iterator
 
         // Find all futures that have been evaluated
         for f in self.fut.iter_mut() {
             if let Poll::Ready(e) = f.poll_unpin(cx) {
-                if !found { found = (pred)(e) };
+                if !found {
+                    found = (pred)(e)
+                };
                 evaluated.push(idx);
             }
             idx += 1;
@@ -45,22 +59,21 @@ impl<F: Future> Future for WaitUntil<F> {
 
         // Book-keeping: Remove fully evaluated futures
         for e in evaluated.into_iter().rev() {
-            self.fut.remove(e);   // not e*O(1)
+            self.fut.remove(e); // not e*O(1)
         }
 
         // Return result
         match found {
-            true  => Poll::Ready(found),
-            false => Poll::Pending
+            true => Poll::Ready(found),
+            false => Poll::Pending,
         }
     }
 }
 
-
 struct Process {
     name: String,
     _rank: usize,
-    val: Option<Child>
+    val: Option<Child>,
 }
 
 /// Read the environment variable RSRUN_RANK as an integer, or return
@@ -69,7 +82,7 @@ fn rank() -> usize {
     if let Ok(rankstr) = std::env::var("RSRUN_RANK") {
         match rankstr.parse::<usize>() {
             Ok(rank) => rank,
-            _        => 0
+            _ => 0,
         }
     } else {
         0
@@ -79,9 +92,11 @@ fn rank() -> usize {
 /// Return a unique process identifier for the current executable,
 /// consisting of a host name and the system process identifier.
 fn pid() -> String {
-    format!("{}:{}",
-            dns_lookup::get_hostname().unwrap_or("(unknown)".to_string()),
-            std::process::id())
+    format!(
+        "{}:{}",
+        dns_lookup::get_hostname().unwrap_or("(unknown)".to_string()),
+        std::process::id()
+    )
 }
 
 /// Spawn this very application exactly once on the given remote host.
@@ -89,23 +104,37 @@ fn pid() -> String {
 /// to the given integer.
 fn spawn_self(host: &str, rank: usize) -> Option<Process> {
     let exe = std::env::current_exe().ok()?;
-    let fd  = std::fs::File::open(exe).ok()?;
-    let cmd = format!("{} && RSRUN_RANK={} {}",
-                      "exe=$(/bin/mktemp) && /bin/cat > $exe", rank,
-                      "/lib64/ld-linux-x86-64.so.2 $exe && /bin/rm $exe");
+    let fd = std::fs::File::open(exe).ok()?;
+    let cmd = format!(
+        "{} && RSRUN_RANK={} {}",
+        "exe=$(/bin/mktemp) && /bin/cat > $exe",
+        rank,
+        "/lib64/ld-linux-x86-64.so.2 $exe && /bin/rm $exe"
+    );
     let fwd = "-R 3636:127.0.0.1:3636";
-    let val = Command::new("ssh").arg(fwd).arg(host).arg(cmd)
-        .stdin(fd).stdout(Stdio::piped()).spawn().ok();
-    Some(Process { name: host.to_string(), _rank: rank, val })
+    let val = Command::new("ssh")
+        .arg(fwd)
+        .arg(host)
+        .arg(cmd)
+        .stdin(fd)
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok();
+    Some(Process {
+        name: host.to_string(),
+        _rank: rank,
+        val,
+    })
 }
 
 #[allow(dead_code)]
 /// Spawn this very application on the given hosts. The binary is
 /// first transferred via SSH to the remote host and then started.
 fn run_on(hosts: &[&str]) -> Vec<Process> {
-    hosts.iter()
+    hosts
+        .iter()
         .enumerate()
-        .filter_map(|(rank, host)| spawn_self(host, rank+1))
+        .filter_map(|(rank, host)| spawn_self(host, rank + 1))
         .collect()
 }
 
@@ -120,7 +149,7 @@ fn run_local(nproc: usize) -> Vec<Process> {
 #[derive(PartialEq, Deserialize, Serialize, Debug)]
 enum Proceed {
     Quit,
-    Resume
+    Resume,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -128,14 +157,17 @@ struct Message {
     sender: String,
     rank: usize,
     proceed: Proceed,
-    payload: String
+    payload: String,
 }
 
 async fn rsrun_quit(stream: &mut net::TcpStream) {
     let (_, mut tx) = stream.split();
     let msg = Message {
-        sender: pid(), rank: rank(), proceed: Proceed::Quit,
-        payload: String::new() };
+        sender: pid(),
+        rank: rank(),
+        proceed: Proceed::Quit,
+        payload: String::new(),
+    };
     if let Ok(encoded) = bincode::serialize(&msg) {
         tx.write_all(&encoded).await.unwrap_or(())
     }
@@ -144,8 +176,11 @@ async fn rsrun_quit(stream: &mut net::TcpStream) {
 async fn rsrun_send(stream: &mut net::TcpStream, s: &str) {
     let (_, mut tx) = stream.split();
     let msg = Message {
-        sender: pid(), rank: rank(), proceed: Proceed::Resume,
-        payload: s.to_string() };
+        sender: pid(),
+        rank: rank(),
+        proceed: Proceed::Resume,
+        payload: s.to_string(),
+    };
     if let Ok(encoded) = bincode::serialize(&msg) {
         tx.write_all(&encoded).await.unwrap_or(())
     }
@@ -163,12 +198,12 @@ async fn handle_slave(stream: &mut net::TcpStream) {
             std::thread::sleep(std::time::Duration::from_millis(2000));
             rsrun_send(stream, "computation done!").await;
             rsrun_quit(stream).await;
-        },
+        }
         3 => {
             std::thread::sleep(std::time::Duration::from_millis(3000));
             rsrun_quit(stream).await;
-        },
-        _ => rsrun_send(stream, "hello").await
+        }
+        _ => rsrun_send(stream, "hello").await,
     };
 }
 
@@ -192,14 +227,23 @@ async fn handle_master(mut stream: net::TcpStream) -> Proceed {
     let mut res = Proceed::Resume;
     while let Some(msg) = rcv {
         match msg {
-            Message { proceed: Proceed::Resume, .. } => {
-                println!("Message from {} with rank {}: \"{}\"",
-                         msg.sender, msg.rank, msg.payload);
-                rcv = rsrun_recv(&mut stream).await; },
-            Message { proceed: Proceed::Quit, .. } => {
-                println!("Sender {} with rank {} wants to quit",
-                         msg.sender, msg.rank);
-                res = Proceed::Quit; rcv = None;
+            Message {
+                proceed: Proceed::Resume,
+                ..
+            } => {
+                println!(
+                    "Message from {} with rank {}: \"{}\"",
+                    msg.sender, msg.rank, msg.payload
+                );
+                rcv = rsrun_recv(&mut stream).await;
+            }
+            Message {
+                proceed: Proceed::Quit,
+                ..
+            } => {
+                println!("Sender {} with rank {} wants to quit", msg.sender, msg.rank);
+                res = Proceed::Quit;
+                rcv = None;
             }
         }
     }
@@ -225,13 +269,14 @@ async fn _accept_conn(listener: net::TcpListener) {
     unimplemented!()
 }
 
-async fn master<S: Fn () -> Vec<Process>>(spawner: S) {
+async fn master<S: Fn() -> Vec<Process>>(spawner: S) {
     if let Some(socket) = bind_socket(3636).await {
         let listener = accept_conn(socket); // accept connections
-        let slaves = spawner();             // spawn children
-        listener.await;                     // handle connections
+        let slaves = spawner(); // spawn children
+        listener.await; // handle connections
 
-        for s in slaves {       // wait for children to terminate
+        for s in slaves {
+            // wait for children to terminate
             if let Some(mut child) = s.val {
                 println!("Waiting for {} to terminate.", s.name);
                 let _ = child.wait().await;
@@ -249,7 +294,7 @@ fn main() {
         // master process spawns and waits for slaves
         if my_rank == 0 {
             let _remote = || run_on(&["rust1", "rust2"]);
-            let local   = || run_local(4);
+            let local = || run_local(4);
             rt.block_on(master(local));
         }
         // all other processes run the slave function
