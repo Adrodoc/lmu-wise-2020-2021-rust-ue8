@@ -143,7 +143,22 @@ fn run_on(hosts: &[&str]) -> Vec<Process> {
 /// the local host. The application binary is being determined by
 /// looking at the file descriptors of the running program.
 fn run_local(nproc: usize) -> Vec<Process> {
-    unimplemented!()
+    (1..=nproc)
+        .map(|rank| {
+            let val = std::env::current_exe().ok().and_then(|exe| {
+                Command::new(&exe)
+                    .env("RSRUN_RANK", rank.to_string())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .ok()
+            });
+            Process {
+                name: format!("child {}", rank),
+                _rank: rank,
+                val,
+            }
+        })
+        .collect()
 }
 
 #[derive(PartialEq, Deserialize, Serialize, Debug)]
