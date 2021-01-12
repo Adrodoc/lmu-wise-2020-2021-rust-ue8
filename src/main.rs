@@ -301,7 +301,7 @@ async fn handle_master(mut stream: net::TcpStream) -> Proceed {
 /// Accept connections and create futures handling these connections.
 /// Be aware that new connections are only accepted if the master
 /// process confirms that slaves want to continue execution.
-async fn accept_conn(listener: net::TcpListener) {
+async fn _accept_conn(listener: net::TcpListener) {
     let mut p = Proceed::Resume;
     while Proceed::Resume == p {
         if let Ok((stream, _)) = listener.accept().await {
@@ -313,8 +313,24 @@ async fn accept_conn(listener: net::TcpListener) {
 /// Accept connections and create futures handling these connections.
 /// Handling connections does not interfere with accepting new
 /// connections.
-async fn _accept_conn(listener: net::TcpListener) {
-    unimplemented!()
+async fn accept_conn(listener: net::TcpListener) {
+    let wait_until = WaitUntil::new(|it| it == Proceed::Quit);
+    pin_mut!(wait_until);
+
+    loop {
+        let accept_connection = listener.accept();
+        pin_mut!(accept_connection);
+
+        match select(accept_connection, wait_until).await {
+            Either::Left((Ok((stream, _)), unused_wait_until)) => {
+                wait_until = unused_wait_until; // Regain ownership
+                wait_until.push(handle_master(stream));
+            }
+            _ => {
+                return;
+            }
+        };
+    }
 }
 
 async fn master<S: Fn() -> Vec<Process>>(spawner: S) {
