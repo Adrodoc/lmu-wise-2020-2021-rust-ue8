@@ -202,7 +202,40 @@ async fn rsrun_send(stream: &mut net::TcpStream, s: &str) {
 }
 
 async fn rsrun_recv(stream: &mut net::TcpStream) -> Option<Message> {
-    unimplemented!()
+    let mut buffer = Vec::with_capacity(16);
+    loop {
+        let mut peak_buffer = [0; 16];
+        let peaked_bytes = stream.peek(&mut peak_buffer).await.ok()?;
+        if peaked_bytes == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&peak_buffer[..peaked_bytes]);
+        match bincode::deserialize::<Message>(&buffer) {
+            Ok(message) => {
+                let message_size = bincode::serialized_size(&message).ok()? as usize;
+                let bytes_to_leave = buffer.len() - message_size;
+                let bytes_to_discard = peaked_bytes - bytes_to_leave;
+                let mut void = vec![0; bytes_to_discard];
+                stream.read_exact(&mut void[..]).await.ok()?;
+                return Some(message);
+            }
+            Err(kind) => match *kind {
+                bincode::ErrorKind::Io(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        let bytes_to_discard = peaked_bytes;
+                        let mut void = vec![0; bytes_to_discard];
+                        stream.read_exact(&mut void[..]).await.ok()?;
+                    }
+                    _ => {
+                        return None;
+                    }
+                },
+                _ => {
+                    return None;
+                }
+            },
+        };
+    }
 }
 
 async fn handle_slave(stream: &mut net::TcpStream) {
